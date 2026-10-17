@@ -43,29 +43,6 @@ export function activate(context: vscode.ExtensionContext) {
     await refresh();
   });
 
-  // Auto-detect external account switches!
-  service.onAccountSwitched(async (newId, email) => {
-    await refresh();
-    const config = vscode.workspace.getConfiguration('antigravityStatus');
-    const autoReload = config.get<boolean>('autoReloadOnSwitch', true);
-
-    if (autoReload) {
-      vscode.window.showInformationMessage(
-        `[反重力监控] 检测到已切换至账号 ${email}，正在自动热重启核心进程以立即生效...`
-      );
-      await commandController.restartBackend();
-    } else {
-      const action = await vscode.window.showInformationMessage(
-        `[反重力监控] 检测到账号已切换至 ${email}！是否立即热重启生效？(免重启 VS Code)`,
-        '立即热重启生效',
-        '稍后'
-      );
-      if (action === '立即热重启生效') {
-        await commandController.restartBackend();
-      }
-    }
-  });
-
   const setupTimer = () => {
     if (refreshTimer) {
       clearInterval(refreshTimer);
@@ -107,11 +84,8 @@ export function activate(context: vscode.ExtensionContext) {
     vscode.commands.registerCommand('antigravity-status.restartBackend', () =>
       commandController.restartBackend()
     ),
-    vscode.commands.registerCommand('antigravity-status.switchAccount', () =>
-      commandController.switchAccount()
-    ),
-    vscode.commands.registerCommand('antigravity-status.importAccount', () =>
-      commandController.importAccount()
+    vscode.commands.registerCommand('antigravity-status.bindAccount', () =>
+      commandController.bindAccount()
     ),
     vscode.commands.registerCommand('antigravity-status.showDetails', () =>
       commandController.showDashboard()

@@ -6,6 +6,7 @@ import { AntigravityStatus } from './types';
 import {
   formatDateLocal,
   formatPercent,
+  formatTimeRemaining,
   formatTokens,
   getAntigravityToolsDir,
 } from './utils';
@@ -20,9 +21,7 @@ export class DashboardPanel {
     panel: vscode.WebviewPanel,
     private service: AntigravityService,
     private onReloadRequested: () => Promise<void>,
-    private onRestartBackendRequested: () => Promise<void>,
-    private onSwitchAccountRequested: () => Promise<void>,
-    private onImportAccountRequested: () => Promise<void>
+    private onRestartBackendRequested: () => Promise<void>
   ) {
     this.panel = panel;
     this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
@@ -41,12 +40,8 @@ export class DashboardPanel {
           case 'restartBackend':
             await this.onRestartBackendRequested();
             break;
-          case 'switchAccount':
-            await this.onSwitchAccountRequested();
-            await this.update();
-            break;
-          case 'importAccount':
-            await this.onImportAccountRequested();
+          case 'bindAccount':
+            await vscode.commands.executeCommand('antigravity-status.bindAccount');
             await this.update();
             break;
         }
@@ -66,9 +61,7 @@ export class DashboardPanel {
   public static createOrShow(
     service: AntigravityService,
     onReloadRequested: () => Promise<void>,
-    onRestartBackendRequested: () => Promise<void>,
-    onSwitchAccountRequested: () => Promise<void>,
-    onImportAccountRequested: () => Promise<void>
+    onRestartBackendRequested: () => Promise<void>
   ): DashboardPanel {
     const column = vscode.window.activeTextEditor
       ? vscode.window.activeTextEditor.viewColumn
@@ -82,7 +75,7 @@ export class DashboardPanel {
 
     const panel = vscode.window.createWebviewPanel(
       'antigravityDashboard',
-      '📊 AntiGravity Switch 仪表盘',
+      '📊 AntiGravity 监控仪表盘',
       column || vscode.ViewColumn.One,
       {
         enableScripts: true,
@@ -94,9 +87,7 @@ export class DashboardPanel {
       panel,
       service,
       onReloadRequested,
-      onRestartBackendRequested,
-      onSwitchAccountRequested,
-      onImportAccountRequested
+      onRestartBackendRequested
     );
     return DashboardPanel.currentPanel;
   }
@@ -104,8 +95,7 @@ export class DashboardPanel {
   public async update(): Promise<void> {
     const status = await this.service.fetchStatus();
     const pricing = this.loadPricing();
-    const accounts = await this.service.fetchAccountsList();
-    this.panel.webview.html = this.renderHtml(status, pricing, accounts.length);
+    this.panel.webview.html = this.renderHtml(status, pricing);
   }
 
   private loadPricing(): Record<string, { input: number; output: number; cached: number }> {
@@ -150,8 +140,7 @@ export class DashboardPanel {
 
   private renderHtml(
     status: AntigravityStatus,
-    pricing: Record<string, { input: number; output: number; cached: number }>,
-    totalAccounts: number
+    pricing: Record<string, { input: number; output: number; cached: number }>
   ): string {
     const today = status.stats?.today || {
       input_tokens: 0,
@@ -209,14 +198,21 @@ export class DashboardPanel {
         : '0';
 
     // Hourly bar chart data
-    const hourlyData = (status.stats as any)?.hourly || [];
+    const hourlyData = status.stats?.hourly || [];
     const hours = ['00:00', '03:00', '06:00', '09:00', '12:00', '15:00', '18:00', '21:00', '23:00'];
     const maxHourlyTotal = Math.max(...hourlyData.map((h: any) => h.total_tokens || 0), 1);
 
     const hourlyBarsHtml = hours
       .map((hLabel, idx) => {
-        const match = hourlyData.find((h: any) => h.hour && h.hour.includes(hLabel.split(':')[0]));
-        const count = match ? match.total_tokens : idx >= 3 && idx <= 5 ? today.total_tokens * 0.25 : 0;
+        const hNum = parseInt(hLabel.split(':')[0], 10);
+        const nextH = idx < hours.length - 1 ? parseInt(hours[idx + 1].split(':')[0], 10) : 24;
+        let count = 0;
+        for (const item of hourlyData) {
+          const itemH = parseInt(item.hour.split(':')[0], 10);
+          if (itemH >= hNum && itemH < nextH) {
+            count += item.total_tokens || 0;
+          }
+        }
         const heightPct = Math.max(6, Math.min(100, Math.round((count / (maxHourlyTotal || today.total_tokens || 1)) * 100)));
         const totalStr = formatTokens(count);
         return `
@@ -615,11 +611,14 @@ export class DashboardPanel {
         <div class="nav-bar">
           <div class="brand">
             <div class="brand-logo">AG</div>
-            <div class="brand-title">AntiGravity Switch</div>
+            <div class="brand-title">AntiGravity Monitor</div>
           </div>
           <div class="nav-actions">
-            <button class="btn-action" onclick="postCmd('importAccount')">➕ 导入账号 (Token)</button>
-            <button class="btn-action" onclick="postCmd('switchAccount')">👥 切换账号</button>
+            ${
+              !status.account
+                ? '<button class="btn-action" style="background:#0284c7;color:#fff;border:none;" onclick="postCmd(\'bindAccount\')">🔑 绑定 Google 账号</button>'
+                : ''
+            }
             <button class="btn-action" onclick="postCmd('reloadPlugin')">⚡ 热重启插件</button>
             <button class="btn-action" onclick="postCmd('restartBackend')">🔌 冷重启核心</button>
             <button class="btn-action btn-primary" onclick="postCmd('refresh')">🔄 刷新数据</button>
@@ -687,14 +686,16 @@ export class DashboardPanel {
           </div>
 
           <div class="kpi-card">
-            <div class="kpi-title">👥 账号状态</div>
-            <div class="kpi-value">${totalAccounts} <span style="font-size:13px;color:var(--text-muted)">个账号</span></div>
-            <div class="kpi-sub">当前激活: ${status.account?.email || '已连接'}</div>
+            <div class="kpi-title">👤 当前账号</div>
+            <div class="kpi-value" style="font-size:16px;text-overflow:ellipsis;overflow:hidden;white-space:nowrap;" title="${status.account?.email || '已连接'}">${status.account?.email ? status.account.email.split('@')[0] : '已连接'}</div>
+            <div class="kpi-sub" style="text-overflow:ellipsis;overflow:hidden;white-space:nowrap;">${status.account?.email || '已连接'}</div>
           </div>
 
           <div class="kpi-card">
-            <div class="kpi-title">⏳ 综合限度</div>
-            <div class="progress-group">
+            <div class="kpi-title">⏳ ${status.account?.quota?.quota_groups ? '综合限度' : '配额状态'}</div>
+            ${
+              status.account?.quota?.quota_groups && status.account.quota.quota_groups.length > 0
+                ? `<div class="progress-group">
               <div class="progress-row">
                 <span>5小时:</span>
                 <span><strong>${fiveHourUsed}%</strong> (剩 ${formatPercent(fiveHourRemaining)})</span>
@@ -709,7 +710,10 @@ export class DashboardPanel {
               <div class="progress-bar">
                 <div class="progress-fill-amber" style="width: ${weeklyUsed}%;"></div>
               </div>
-            </div>
+            </div>`
+                : `<div class="kpi-value" style="font-size:17px;color:var(--cyan-accent);">${status.account?.quota?.subscription_tier || 'Google AI'}</div>
+            <div class="kpi-sub">无固定限额 · 全局动态调度</div>`
+            }
           </div>
 
           <div class="kpi-card">
@@ -718,6 +722,49 @@ export class DashboardPanel {
             <div class="kpi-sub">${today.request_count.toLocaleString()} 次请求, 含缓存输入</div>
           </div>
         </div>
+
+        ${
+          status.account?.quota?.quota_groups && status.account.quota.quota_groups.length > 0
+            ? `
+        <!-- Live Antigravity Quota Groups (5h & Weekly) -->
+        <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(320px, 1fr));gap:16px;margin-bottom:24px;">
+          ${status.account.quota.quota_groups
+            .map(
+              (g) => `
+            <div class="chart-card" style="padding:16px 22px;">
+              <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;">
+                <div style="font-weight:700;font-size:15px;color:var(--cyan-accent);">${g.display_name}</div>
+                <div style="font-size:12px;color:var(--text-muted);">实时官方限额</div>
+              </div>
+              ${g.buckets
+                .slice()
+                .sort((a, b) => (a.window === '5h' ? -1 : b.window === '5h' ? 1 : 0))
+                .map((b) => {
+                  const usedPct = Math.round((1 - b.remaining_fraction) * 100);
+                  const remPct = Math.round(b.remaining_fraction * 100);
+                  const wLabel = b.window === '5h' ? '5小时限额 (5-Hour)' : b.window === 'weekly' ? '周限额 (Weekly)' : `${b.window} 限额`;
+                  const barColor = remPct <= 10 ? 'linear-gradient(90deg, #ef4444, #dc2626)' : remPct <= 25 ? 'linear-gradient(90deg, #f59e0b, #ef4444)' : 'linear-gradient(90deg, #00c5ff, #3b82f6)';
+                  return `
+                <div style="margin-bottom:12px;">
+                  <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:6px;">
+                    <span>${wLabel}: <strong>${remPct}%</strong> 剩余</span>
+                    <span style="color:var(--text-muted);font-size:12px;">重置时间: ${formatTimeRemaining(b.reset_time)}</span>
+                  </div>
+                  <div class="progress-bar" style="height:8px;background:rgba(255,255,255,0.06);border-radius:4px;overflow:hidden;">
+                    <div style="height:100%;background:${barColor};border-radius:4px;width:${usedPct}%;"></div>
+                  </div>
+                </div>
+              `;
+                })
+                .join('')}
+            </div>
+          `
+            )
+            .join('')}
+        </div>
+        `
+            : ''
+        }
 
         <!-- Middle Charts Row -->
         <div class="charts-row">

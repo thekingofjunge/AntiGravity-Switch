@@ -74,27 +74,44 @@ export class StatusBarController {
     }
 
     const todayTokens = formatTokens(status.stats?.today?.total_tokens ?? 0);
+    const reqCount = status.stats?.today?.request_count ?? 0;
+    const hasQuota = fiveHourGeminiFraction !== null || weeklyGeminiFraction !== null;
     const fiveHourPercentStr =
       fiveHourGeminiFraction !== null ? formatPercent(fiveHourGeminiFraction) : '--';
     const weeklyPercentStr =
       weeklyGeminiFraction !== null ? formatPercent(weeklyGeminiFraction) : '--';
 
-    // Format text - Default prominent 5h limit as user requested
-    switch (displayFormat) {
-      case 'compact':
-        this.statusBarItem.text = `$(sparkle) 反重力: ${fiveHourPercentStr} (5h)`;
-        break;
-      case '5h-only':
-        this.statusBarItem.text = `$(sparkle) 反重力: ${fiveHourPercentStr} (5h) | 今日 ${todayTokens}`;
-        break;
-      case 'full':
-        this.statusBarItem.text = `$(sparkle) 反重力: 5h ${fiveHourPercentStr} | 周 ${weeklyPercentStr} | 今日 ${todayTokens}`;
-        break;
-      case 'standard':
-      default:
-        // Default standard: 5h limit first + weekly + today tokens
-        this.statusBarItem.text = `$(sparkle) 反重力: ${fiveHourPercentStr} (5h) | 周 ${weeklyPercentStr} | 今日 ${todayTokens}`;
-        break;
+    // Format text
+    if (hasQuota) {
+      switch (displayFormat) {
+        case 'compact':
+          this.statusBarItem.text = `$(sparkle) 反重力: ${fiveHourPercentStr} (5h)`;
+          break;
+        case '5h-only':
+          this.statusBarItem.text = `$(sparkle) 反重力: ${fiveHourPercentStr} (5h) | 今日 ${todayTokens}`;
+          break;
+        case 'full':
+          this.statusBarItem.text = `$(sparkle) 反重力: 5h ${fiveHourPercentStr} | 周 ${weeklyPercentStr} | 今日 ${todayTokens}`;
+          break;
+        case 'standard':
+        default:
+          this.statusBarItem.text = `$(sparkle) 反重力: ${fiveHourPercentStr} (5h) | 周 ${weeklyPercentStr} | 今日 ${todayTokens}`;
+          break;
+      }
+    } else {
+      switch (displayFormat) {
+        case 'compact':
+          this.statusBarItem.text = `$(sparkle) 反重力: 今日 ${todayTokens}`;
+          break;
+        case 'full':
+          this.statusBarItem.text = `$(sparkle) 反重力: 今日 ${todayTokens} | 请求 ${reqCount}次 | 运行中`;
+          break;
+        case '5h-only':
+        case 'standard':
+        default:
+          this.statusBarItem.text = `$(sparkle) 反重力: 今日 ${todayTokens} | 请求 ${reqCount}次`;
+          break;
+      }
     }
 
     // Warning color: based on 5h limit & weekly limit
@@ -147,12 +164,17 @@ export class StatusBarController {
       md.appendMarkdown('| 模型组 | 周期 | 剩余配额 | 重置时间 |\n');
       md.appendMarkdown('| :--- | :--- | :--- | :--- |\n');
       for (const group of quotaGroups) {
-        for (const bucket of group.buckets) {
+        const sortedBuckets = group.buckets.slice().sort((a, b) => {
+          if (a.window === '5h') return -1;
+          if (b.window === '5h') return 1;
+          return 0;
+        });
+        for (const bucket of sortedBuckets) {
           const windowLabel =
-            bucket.window === 'weekly'
-              ? '周限额 (Weekly)'
-              : bucket.window === '5h'
+            bucket.window === '5h'
               ? '5小时限额 (5-Hour)'
+              : bucket.window === 'weekly'
+              ? '周限额 (Weekly)'
               : `${bucket.window} 限额`;
           const remaining = `**${formatPercent(bucket.remaining_fraction)}**`;
           const resetHuman = formatTimeRemaining(bucket.reset_time);
@@ -172,6 +194,8 @@ export class StatusBarController {
         );
       }
       md.appendMarkdown('\n');
+    } else {
+      md.appendMarkdown('- **配额状态**: 当前账号为基础版 (Google AI)，官方无固定周期限额，由反重力核心全局动态调度。\n\n');
     }
 
     // Token statistics
@@ -209,12 +233,14 @@ export class StatusBarController {
     md.appendMarkdown('\n---\n');
     const updateTimeStr = formatDateLocal(status.lastUpdated.toISOString());
     md.appendMarkdown(`*更新时间: ${updateTimeStr}*\n\n`);
+    const authLink = status.account
+      ? `[🔄 刷新状态](command:antigravity-status.refresh) &nbsp;|&nbsp; `
+      : `[🔑 绑定 Google 账号](command:antigravity-status.bindAccount) &nbsp;|&nbsp; `;
     md.appendMarkdown(
       `👉 [📊 高级仪表盘](command:antigravity-status.showDashboard) &nbsp;|&nbsp; ` +
+      authLink +
       `[⚡ 热重载插件](command:antigravity-status.reloadExtensionHost) &nbsp;|&nbsp; ` +
-      `[👥 切换账号](command:antigravity-status.switchAccount) &nbsp;|&nbsp; ` +
-      `[➕ 导入账号](command:antigravity-status.importAccount) &nbsp;|&nbsp; ` +
-      `[⚙️ 菜单](command:antigravity-status.showMenu)`
+      `[⚙️ 更多选项](command:antigravity-status.showMenu)`
     );
 
     return md;

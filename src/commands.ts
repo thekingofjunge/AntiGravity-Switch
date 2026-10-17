@@ -2,12 +2,7 @@ import * as vscode from 'vscode';
 import { AntigravityService } from './service';
 import { DashboardPanel } from './dashboardPanel';
 import { AntigravityStatus } from './types';
-import {
-  formatDateLocal,
-  formatPercent,
-  formatTimeRemaining,
-  formatTokens,
-} from './utils';
+import { loginWithGoogleBrowser, resolveTokenInfo } from './oauth';
 
 export class CommandController {
   private outputChannel: vscode.OutputChannel;
@@ -35,15 +30,13 @@ export class CommandController {
     DashboardPanel.createOrShow(
       this.service,
       () => this.reloadExtensionHost(),
-      () => this.restartBackend(),
-      () => this.switchAccount(),
-      () => this.importAccount()
+      () => this.restartBackend()
     );
   }
 
   public async showMenu(): Promise<void> {
     const status = this.getLatestStatus();
-    const email = status?.account?.email ? ` (${status.account.email})` : '';
+    const email = status?.account?.email ? ` (${status.account.email})` : ' (未绑定)';
 
     interface MenuQuickPickItem extends vscode.QuickPickItem {
       id: string;
@@ -56,19 +49,14 @@ export class CommandController {
         description: '高颜值图表看板：今日Token、费用估算、生成速度、模型明细',
       },
       {
+        id: 'bind-account',
+        label: `$(key) 🔑 登录/绑定当前 Google 账号${email}`,
+        description: '通过官方浏览器一键授权，将账号与配额同步到状态栏与仪表盘',
+      },
+      {
         id: 'refresh',
         label: '$(refresh) 🔄 刷新状态与配额数据',
         description: '重新获取 5小时限额、周限额与 Token 消耗',
-      },
-      {
-        id: 'import-account',
-        label: '$(plus) ➕ 导入账号 (OAuth Refresh Token)',
-        description: '通过邮箱与 refresh_token 直接添加新 Google 账号',
-      },
-      {
-        id: 'switch-account',
-        label: `$(account) 👥 切换反重力账号${email}`,
-        description: '直接选择并切换已登录的 Google 账号 (免重启 VS Code)',
       },
       {
         id: 'reload-ext-host',
@@ -78,7 +66,7 @@ export class CommandController {
       {
         id: 'restart-backend',
         label: '$(debug-restart) 🔌 强制冷重启核心后端 (Kill & Restart agy.exe)',
-        description: '终止旧进程并释放端口，强制以新凭据冷拉起服务',
+        description: '终止旧进程并释放端口，强制冷拉起服务',
       },
       {
         id: 'reload-window',
@@ -88,7 +76,7 @@ export class CommandController {
       {
         id: 'open-settings',
         label: '$(gear) ⚙️ 打开插件设置',
-        description: '配置刷新频率、agy-switch 路径及显示格式',
+        description: '配置刷新频率、代理地址及显示格式',
       },
     ];
 
@@ -104,15 +92,12 @@ export class CommandController {
       case 'show-dashboard':
         this.showDashboard();
         break;
+      case 'bind-account':
+        await this.bindAccount();
+        break;
       case 'refresh':
         await this.refreshCallback();
         vscode.window.showInformationMessage('反重力状态已刷新！');
-        break;
-      case 'import-account':
-        await this.importAccount();
-        break;
-      case 'switch-account':
-        await this.switchAccount();
         break;
       case 'reload-ext-host':
         await this.reloadExtensionHost();
@@ -130,6 +115,138 @@ export class CommandController {
         );
         break;
     }
+  }
+
+  public async bindAccount(): Promise<void> {
+    interface BindMethodPickItem extends vscode.QuickPickItem {
+      id: 'browser' | 'paste-token' | 'paste-json';
+    }
+
+    const items: BindMethodPickItem[] = [
+      {
+        id: 'browser',
+        label: '$(globe) 🌐 浏览器跳转 Google 登录 (一键授权 · 推荐)',
+        description: '自动拉起系统浏览器进行 Google 官方 OAuth 授权，无需手动复制 Token',
+      },
+      {
+        id: 'paste-token',
+        label: '$(key) 🔑 直接填 Token / Refresh Token (免输邮箱)',
+        description: '直接粘贴 1// 开头的 Refresh Token，插件将自动解析 Google 邮箱并获取配额',
+      },
+      {
+        id: 'paste-json',
+        label: '$(json) 📋 粘贴完整 JSON 凭据',
+        description: '粘贴包含 refresh_token、email 等字段的完整 JSON 格式凭据',
+      },
+    ];
+
+    const selected = await vscode.window.showQuickPick(items, {
+      placeHolder: '请选择绑定当前 Google 账号的方式...',
+    });
+
+    if (!selected) {
+      return;
+    }
+
+    if (selected.id === 'browser') {
+      await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: '已在浏览器打开 Google 登录页，等待授权回调...',
+          cancellable: false,
+        },
+        async () => {
+          try {
+            const authRes = await loginWithGoogleBrowser();
+            const res = await this.service.bindAccount(
+              authRes.email,
+              authRes.refreshToken,
+              authRes.accessToken,
+              authRes.idToken,
+              authRes.name
+            );
+            if (res.success) {
+              await this.refreshCallback();
+              vscode.window.showInformationMessage(`🎉 ${res.message}`);
+            } else {
+              vscode.window.showErrorMessage(`绑定账号失败: ${res.message}`);
+            }
+          } catch (err: any) {
+            vscode.window.showErrorMessage(`Google 授权失败: ${err.message || String(err)}`);
+          }
+        }
+      );
+      return;
+    }
+
+    // paste-token or paste-json
+    const promptText =
+      selected.id === 'paste-token'
+        ? '请粘贴 OAuth Refresh Token (以 1// 开头，将自动提取对应 Google 邮箱)'
+        : '请粘贴包含 refresh_token 的完整 JSON 凭据文本';
+
+    const rawInput = await vscode.window.showInputBox({
+      title: '绑定 Google Antigravity 账号 Token',
+      prompt: promptText,
+      placeHolder:
+        selected.id === 'paste-token'
+          ? '1//0g...'
+          : '{"refresh_token": "1//...", "email": "user@gmail.com"}',
+      password: selected.id === 'paste-token',
+      ignoreFocusOut: true,
+      validateInput: (val) => {
+        if (!val || val.trim().length < 15) {
+          return 'Token 内容过短，请提供有效的凭据';
+        }
+        return null;
+      },
+    });
+
+    if (!rawInput) {
+      return;
+    }
+
+    await vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title: '正在校验 Token 并获取配额...',
+        cancellable: false,
+      },
+      async () => {
+        try {
+          const resolved = await resolveTokenInfo(rawInput.trim());
+
+          let finalEmail = resolved.email;
+          if (!finalEmail) {
+            finalEmail =
+              (await vscode.window.showInputBox({
+                title: '确认账号邮箱',
+                prompt: '未能从该 Token 中自动解析出 Google 邮箱，请输入该账号邮箱',
+                placeHolder: 'user@gmail.com',
+                ignoreFocusOut: true,
+              })) || '';
+            if (!finalEmail) return;
+          }
+
+          const res = await this.service.bindAccount(
+            finalEmail.trim(),
+            resolved.refreshToken,
+            resolved.accessToken,
+            resolved.idToken,
+            resolved.name
+          );
+
+          if (res.success) {
+            await this.refreshCallback();
+            vscode.window.showInformationMessage(`🎉 ${res.message}`);
+          } else {
+            vscode.window.showErrorMessage(`绑定账号失败: ${res.message}`);
+          }
+        } catch (err: any) {
+          vscode.window.showErrorMessage(`解析 Token 失败: ${err.message || String(err)}`);
+        }
+      }
+    );
   }
 
   public async reloadExtensionHost(): Promise<void> {
@@ -169,148 +286,6 @@ export class CommandController {
           await vscode.commands.executeCommand('workbench.action.restartExtensionHost');
         } catch {
           await vscode.commands.executeCommand('workbench.action.reloadWindow');
-        }
-      }
-    );
-  }
-
-  public async switchAccount(targetEmail?: string): Promise<void> {
-    try {
-      const accounts = await this.service.fetchAccountsList();
-      if (!accounts || accounts.length === 0) {
-        vscode.window.showWarningMessage('未发现已配置的反重力账号。');
-        return;
-      }
-
-      let chosenEmail = targetEmail;
-
-      if (!chosenEmail) {
-        interface AccountPickItem extends vscode.QuickPickItem {
-          account: any;
-        }
-
-        const items: AccountPickItem[] = accounts.map((acc) => {
-          const isCurrent = acc.is_current ? '【当前使用中】' : '';
-          const tier = acc.quota?.subscription_tier || 'Google AI';
-
-          let q5hStr = '--';
-          let qWkStr = '--';
-          if (acc.quota?.quota_groups) {
-            for (const g of acc.quota.quota_groups) {
-              if (g.display_name.includes('Gemini')) {
-                for (const b of g.buckets) {
-                  if (b.window === '5h') q5hStr = formatPercent(b.remaining_fraction);
-                  if (b.window === 'weekly') qWkStr = formatPercent(b.remaining_fraction);
-                }
-              }
-            }
-          }
-
-          return {
-            label: `$(account) ${acc.email}`,
-            description: `${isCurrent} [${tier}] ${acc.name || ''}`,
-            detail: `Gemini 5h限额: ${q5hStr} | 周限额: ${qWkStr} | ID: ${acc.id.substring(0, 8)}...`,
-            account: acc,
-          };
-        });
-
-        const chosen = await vscode.window.showQuickPick(items, {
-          placeHolder: '选择要切换的目标账号 (切换后将自动热重启生效，无需重启 VS Code)',
-        });
-
-        if (!chosen) {
-          return;
-        }
-
-        chosenEmail = chosen.account.email;
-      }
-
-      vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: `正在切换至账号 ${chosenEmail}...`,
-          cancellable: false,
-        },
-        async () => {
-          const res = await this.service.switchAccount(chosenEmail!);
-          if (res.success) {
-            vscode.window.showInformationMessage(
-              `账号已成功切换为 ${chosenEmail}！已重新拉起新凭据。`
-            );
-            await this.refreshCallback();
-
-            await this.context.globalState.update('antigravity.autoFocusPanelAfterReload', true);
-            // Wait 600ms then reload extension host
-            await new Promise((r) => setTimeout(r, 600));
-            try {
-              await vscode.commands.executeCommand('workbench.action.restartExtensionHost');
-            } catch {
-              await vscode.commands.executeCommand('workbench.action.reloadWindow');
-            }
-          } else {
-            vscode.window.showErrorMessage(`切换账号失败: ${res.message}`);
-          }
-        }
-      );
-    } catch (err: any) {
-      vscode.window.showErrorMessage(`获取账号列表失败: ${err.message || String(err)}`);
-    }
-  }
-
-  public async importAccount(): Promise<void> {
-    const email = await vscode.window.showInputBox({
-      title: '导入 Google Antigravity 账号',
-      prompt: '请输入 Google 账号邮箱 (例如: your-account@gmail.com)',
-      placeHolder: 'user@gmail.com',
-      ignoreFocusOut: true,
-      validateInput: (val) => {
-        if (!val || !val.includes('@')) {
-          return '请输入有效的邮箱地址';
-        }
-        return null;
-      },
-    });
-    if (!email) {
-      return;
-    }
-
-    const refreshToken = await vscode.window.showInputBox({
-      title: '导入 Google Antigravity 账号',
-      prompt: '请输入 OAuth Refresh Token (以 1// 开头)',
-      placeHolder: '1//0g...',
-      password: true,
-      ignoreFocusOut: true,
-      validateInput: (val) => {
-        if (!val || val.trim().length < 10) {
-          return 'Refresh Token 格式不正确，通常以 1// 开头';
-        }
-        return null;
-      },
-    });
-    if (!refreshToken) {
-      return;
-    }
-
-    await vscode.window.withProgress(
-      {
-        location: vscode.ProgressLocation.Notification,
-        title: `正在导入账号 ${email} 并初始化配额...`,
-        cancellable: false,
-      },
-      async () => {
-        const res = await this.service.importAccount(email.trim(), refreshToken.trim());
-        if (res.success) {
-          await this.refreshCallback();
-          const action = await vscode.window.showInformationMessage(
-            `🎉 ${res.message} 是否立即切换至该账号？`,
-            '立即切换',
-            '稍后切换'
-          );
-          if (action === '立即切换') {
-            await this.switchAccount(email.trim());
-          }
-        } else {
-          vscode.window.showErrorMessage(`导入账号失败: ${res.message}`);
         }
       }
     );

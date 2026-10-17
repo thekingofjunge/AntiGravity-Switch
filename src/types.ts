@@ -64,6 +64,7 @@ export interface TokenStats {
   last_7_days?: TokenStatsToday;
   recent_performance?: TokenStatsRecentPerformance;
   by_model_today?: TokenStatsModel[];
+  hourly?: Array<{ hour: string; total_tokens: number }>;
   generated_at?: number;
 }
 

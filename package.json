@@ -1,8 +1,8 @@
 {
   "name": "antigravity-status-bar",
-  "displayName": "Google Antigravity Status & Reload",
-  "description": "VS Code 状态栏反重力插件监控：实时展示 5小时配额、周配额、高颜值Token仪表盘，并提供外部切号自动热重载与OAuth Token账号导入",
-  "version": "1.5.0",
+  "displayName": "Google Antigravity Status & Quota Monitor",
+  "description": "VS Code 状态栏反重力监控：实时展示 5小时配额、周配额、高颜值Token用量仪表盘，并支持扩展热重载与核心后端重启",
+  "version": "1.5.2",
   "publisher": "local-dev",
   "engines": {
     "vscode": "^1.80.0"
@@ -10,7 +10,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/HongChenGG/AntiGravity-Switch"
+    "url": "https://github.com/thekingofjunge/AntiGravity-Switch"
   },
   "keywords": [
     "antigravity",
@@ -18,7 +18,6 @@
     "ai",
     "quota",
     "token",
-    "switch-account",
     "dashboard"
   ],
   "categories": [
@@ -41,13 +40,13 @@
         "category": "Antigravity"
       },
       {
-        "command": "antigravity-status.refresh",
-        "title": "反重力: 刷新状态与统计",
+        "command": "antigravity-status.bindAccount",
+        "title": "反重力: 登录/绑定当前 Google 账号",
         "category": "Antigravity"
       },
       {
-        "command": "antigravity-status.importAccount",
-        "title": "反重力: 导入账号 (OAuth Refresh Token)",
+        "command": "antigravity-status.refresh",
+        "title": "反重力: 刷新状态与统计",
         "category": "Antigravity"
       },
       {
@@ -58,11 +57,6 @@
       {
         "command": "antigravity-status.restartBackend",
         "title": "反重力: 强制冷重启核心后端 (agy.exe)",
-        "category": "Antigravity"
-      },
-      {
-        "command": "antigravity-status.switchAccount",
-        "title": "反重力: 切换账号 (免重启 VS Code)",
         "category": "Antigravity"
       },
       {
@@ -79,6 +73,11 @@
     "configuration": {
       "title": "反重力状态监控 (Antigravity Status)",
       "properties": {
+        "antigravityStatus.proxyUrl": {
+          "type": "string",
+          "default": "",
+          "description": "自定义代理服务器地址 (例如 http://127.0.0.1:7890)。留空则自动继承系统环境变量或直连，绝不强制指定端口"
+        },
         "antigravityStatus.agySwitchPath": {
           "type": "string",
           "default": "",
@@ -113,11 +112,6 @@
           ],
           "default": "standard",
           "description": "状态栏文字显示格式: standard (5h配额 + 周配额 + 今日Token), 5h-only (仅5h配额 + 今日Token), compact (仅5h配额), full (详细)"
-        },
-        "antigravityStatus.autoReloadOnSwitch": {
-          "type": "boolean",
-          "default": true,
-          "description": "当在外部软件切换账号时，是否自动重启核心进程并热重载 VS Code 插件使新账号立即生效 (免手动关闭重新打开 VS Code)"
         }
       }
     }
@@ -129,6 +123,7 @@
   "devDependencies": {
     "@types/node": "^20.19.43",
     "@types/vscode": "^1.80.0",
+    "@vscode/vsce": "^4.0.0",
     "typescript": "^5.4.0"
   }
 }
